@@ -1,177 +1,369 @@
-# RepoScribe - GitHub Repository Documentation Generator
+# RepoScribe
 
-Paste a GitHub repository link and RepoScribe reads the code, then **Gemini** writes the documentation:
-`README.md`, `ARCHITECTURE.md` (with a rendered Mermaid diagram), `API.md`, `CONTRIBUTING.md` and `CHANGELOG.md`.
-It scores the existing README before and after, and exposes everything through a documented REST API with
-API-key authentication and signed webhooks.
+GitHub repository documentation generator powered by the Google Gemini API.
 
-> GenAI Applications (BTIN337) - CIA-P individual project.  Stack: Next.js 16 (App Router) + TypeScript, Gemini REST API, Upstash Redis, Vercel.
+RepoScribe analyzes GitHub repositories and automatically generates comprehensive documentation sets including README.md, ARCHITECTURE.md with Mermaid diagrams, API.md, CONTRIBUTING.md, and CHANGELOG.md. It provides deterministic codebase analysis, automated README health scoring before and after generation, content-addressed caching, an OpenAPI-compliant REST API with API key authentication, incoming GitHub push auto-sync webhooks, and signed outbound webhooks.
 
-## Assignment requirements -> where they are met
+---
 
-| # | Requirement | Implementation |
-|---|-------------|----------------|
-| 1 | Functional application | Web UI at `/` (generate, preview, edit-by-instruction, export) and `/developers` |
-| 2 | Deployment on Vercel | Standard Next.js project, no custom server - see [Deploy to Vercel](#deploy-to-vercel) |
-| 3 | Direct Gemini integration | `src/lib/gemini.ts` calls `generateContent` over REST with `fetch` (no wrapper libraries) |
-| 4 | API export methods | `POST /api/v1/generate`, `POST /api/v1/analyze`, `GET /api/v1/docs`, `GET /api/v1/docs/{id}?format=json\|markdown` ... |
-| 5 | Webhooks | Outbound signed webhooks (`/api/v1/webhooks`) **and** an incoming GitHub-push receiver (`/api/v1/hooks/github/{token}`); JSON in/out, proper status codes |
-| 6 | API-key authentication | `src/lib/auth.ts` - structured `rsk_<id>_<secret>` keys, hashed at rest, scopes, per-key rate limits, rotate/revoke |
-| 7 | API documentation | OpenAPI 3.1 spec at `/api/v1/openapi.json`, interactive Swagger UI at `/docs` |
-| - | Secrets in `.env`, not in code | `.env.example` + `.env*` git-ignored; nothing is hard-coded |
+## Table of Contents
 
-## Features
+- Overview
+- Architecture and Technologies
+- Exact End-to-End Workflow
+- Detailed Component Workflows
+  - 1. User Interface and API Ingestion
+  - 2. Authentication and Rate Limiting
+  - 3. Repository Fetching and Context Budgeting
+  - 4. Deterministic Codebase Analysis
+  - 5. README Health Scoring Engine
+  - 6. LLM Generation Pipeline
+  - 7. Post-Processing and Mermaid Rendering
+  - 8. Document Refinement
+  - 9. Incoming GitHub Auto-Sync Webhook
+  - 10. Outbound Event Webhook Delivery
+- API Reference
+- Environment Variables
+- Local Setup and Installation
+- Testing and Quality Assurance
+- Security Architecture
 
-**Generation**
-- 5 document types, 4 styles (concise / standard / detailed / beginner), any output language
-- Smart file selection: ranks manifests, entry points, routes and docs, skips lockfiles / `node_modules` / binaries, fits a fixed context budget
-- Deterministic analysis with no LLM cost: languages, tech stack, scripts, environment variables, tests / CI / Docker detection
-- **README health score (0-100)** before and after, with concrete suggestions
-- Mermaid architecture diagram rendered in the browser (falls back to the source if the model emits invalid syntax)
-- "Refine" any document with a natural-language instruction
-- Results cached by repository content (git tree SHA) + options, so an unchanged repo costs **zero** Gemini quota
-- Live progress for long jobs (async mode + polling), private repos via a per-request GitHub token
+---
 
-**API platform**
-- API keys: self-service creation, scopes (`generate`, `read`, `webhooks`), rate limit per minute, daily generation quota, rotate, revoke
-- Webhooks: HMAC-SHA256 signatures with timestamp (replay protection), retries with backoff, delivery log, auto-disable after repeated failures, SSRF protection
-- **Auto-sync**: add a GitHub webhook once and docs regenerate on every push (signature-verified, idempotent, debounced)
-- Uniform error envelope, `X-Request-Id`, `Retry-After`, `X-RateLimit-*` headers, CORS
+## Overview
 
-## Quick start (local)
+RepoScribe inspects public or private GitHub repositories, extracts dependency structures, entry points, routes, and source files, and produces documentation adhering to configurable styles and languages. 
 
-Requires Node 20+ and a free Gemini API key from <https://aistudio.google.com/apikey>.
+Key capabilities:
+- Five document types: README, Architecture, API Reference, Contributing Guidelines, Changelog.
+- Four style presets: concise, standard, detailed, beginner-friendly.
+- Multi-language output support across global languages.
+- Deterministic static analysis with zero LLM consumption for tech stack, scripts, and environment variable discovery.
+- Automated README health score from 0 to 100 with actionable feedback before and after generation.
+- Zero-quota content-addressed cache keyed by git tree SHA and generation options.
+- Interactive Mermaid architecture diagrams rendered in browser with fallback handling.
+- Incremental document refinement using natural-language instructions.
+- Bi-directional webhook system: incoming GitHub push receivers and HMAC-signed outbound notification webhooks.
+- Scoped API key authentication with per-minute rate limiting and daily usage quotas.
 
+---
+
+## Architecture and Technologies
+
+The application is built as a unified full-stack system deployed on serverless architecture:
+
+- Runtime and Framework: Next.js 16 (App Router) with React 19 and TypeScript.
+- LLM Provider: Google Gemini REST API (v1beta `generateContent` via direct fetch, supporting gemini-3.5-flash-lite, gemini-flash-latest, and automatic fallback chains).
+- Styling: Tailwind CSS v4 with Typography plugin.
+- Markdown and Visualizations: React-Markdown, Remark-GFM, and Mermaid.js with strict security isolation.
+- Validation: Zod schemas for all API payloads and environment variables.
+- Persistence: Key-Value store supporting Upstash Redis / Vercel KV for cloud deployment, with transparent local filesystem fallback for development.
+- Testing: Vitest for unit and integration testing.
+
+---
+
+## Exact End-to-End Workflow
+
+The complete execution lifecycle for documentation generation proceeds through the following sequential stages:
+
+```
+[User / API Client / GitHub Webhook]
+                 |
+                 v
+   [1. Request Ingestion & Validation]
+                 |
+                 v
+    [2. Auth, Scopes & Rate Limits]
+                 |
+                 v
+  [3. GitHub Repository Snapshot & Tree]
+                 |
+                 v
+      [4. Cache Key Calculation] -------------> [Cache Hit: Return Stored Docs]
+                 |
+            Cache Miss
+                 |
+                 v
+  [5. File Selection & Context Budgeting]
+                 |
+                 v
+  [6. Deterministic Static Code Analysis]
+                 |
+                 v
+  [7. Pre-Generation README Health Score]
+                 |
+                 v
+ [8. Gemini REST API Parallel Generation]
+                 |
+                 v
+    [9. Post-Processing & Badges]
+                 |
+                 v
+  [10. Post-Generation Health Scoring]
+                 |
+                 v
+    [11. Persistence & Cache Storage]
+                 |
+                 v
+  [12. Outbound Webhook Notification]
+```
+
+### High-Level Stage Descriptions
+
+1. Request Ingestion: The user inputs a GitHub URL via the web dashboard or calls `POST /api/v1/generate`.
+2. Validation: The request body is verified against Zod schemas ensuring valid URL syntax, branch formatting, allowed document types, style presets, and target language.
+3. Access Control: For API requests, bearer tokens or API key headers are verified against SHA-256 hashes in the KV store, checking permissions, per-minute request counts, and daily generation limits.
+4. Repository Inspection: The GitHub REST API is queried for metadata and the recursive git tree SHA.
+5. Cache Verification: A SHA-256 hash combining the repository full name, branch, tree SHA, document types, style, language, badge flags, and prompt template version is computed. If found in cache, stored documentation is returned immediately without contacting Gemini.
+6. File Ranking: Repository files are filtered and ranked based on importance (manifests, entry points, routers, configs) and loaded within an 80,000-character context budget.
+7. Static Analysis: Source code and manifests are parsed with zero LLM calls to detect frameworks, dependencies, scripts, and environment variables.
+8. Baseline Evaluation: Existing README is scored from 0 to 100 based on coverage criteria.
+9. Gemini Generation: Prompts containing system instructions, repository analysis, tree summaries, and source code are sent to Gemini over HTTPS. Generation runs with concurrency control.
+10. Post-Processing: Code fences are stripped, Shields.io badges are dynamically attached, and markdown structure is sanitized.
+11. Re-Evaluation: Generated README is scored to compute the quality delta.
+12. Delivery: Results are saved to the KV store, returned to the caller, and broadcast to subscribed outbound webhooks.
+
+---
+
+## Detailed Component Workflows
+
+### 1. User Interface and API Ingestion
+
+The application exposes two entry surfaces:
+- Web Dashboard (`/`): Allows users to submit repository URLs, toggle document options, view real-time progress indicators, preview rendered Markdown with syntax highlighting and interactive Mermaid diagrams, download files, and refine documents with natural-language instructions.
+- REST API (`/api/v1/*`): Provides programmatic access for synchronous or asynchronous generation, repository analysis, document retrieval, refinement, and key management.
+
+For asynchronous generation requests (`"async": true`), the server returns HTTP 202 Accepted with a `Location: /api/v1/docs/{id}` header. Clients poll this endpoint until the job status changes from `running` to `completed`.
+
+### 2. Authentication and Rate Limiting
+
+The authentication engine operates as follows:
+- Keys are issued via `POST /api/v1/keys` with structured tokens formatted as `rsk_<12_char_id>_<32_char_secret>`.
+- The secret is hashed using SHA-256. Only `id`, `name`, `secretHash`, and `scopes` are persisted. Plaintext secrets are never stored.
+- Incoming requests provide keys via `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+- The engine checks assigned scopes (`generate`, `read`, `webhooks`).
+- Sliding-window rate limiters track per-minute requests per key, returning HTTP 429 and `Retry-After` headers if exceeded.
+- Daily usage quotas prevent quota exhaustion on upstream Gemini endpoints.
+
+### 3. Repository Fetching and Context Budgeting
+
+Repository retrieval is performed via the GitHub REST API:
+- URL parsing extracts owner, repository, and branch references.
+- `GET /repos/{owner}/{repo}` fetches default branch, description, stars, license, and primary language.
+- `GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1` retrieves the complete tree structure.
+- When private repository access is needed, a caller-provided GitHub personal access token is passed in memory for that request only and never persisted.
+- File selector ignores vendor paths, lockfiles, compiled binaries, images, and `node_modules`.
+- Candidate files are prioritized:
+  - Manifests: `package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`.
+  - Application entry points: `main.*`, `index.*`, `app.*`, `server.*`.
+  - Routing and controllers: `src/app/**`, `routes/**`, `api/**`.
+  - Configuration: `tsconfig.json`, `Dockerfile`, `docker-compose.yml`.
+  - Existing documentation: `README*`, `docs/**`.
+- Files are fetched in parallel and truncated when total character volume reaches the 80,000-character safety budget.
+
+### 4. Deterministic Codebase Analysis
+
+Static inspection executes before calling any LLM:
+- Node.js ecosystem detection scans dependencies and scripts in `package.json`.
+- Python ecosystem detection matches package rules in `requirements.txt`, `pyproject.toml`, or `Pipfile`.
+- Go, Rust, Java, and Ruby manifests are matched against known frameworks (Gin, Echo, Fiber, Actix, Axum, Tokio, Spring Boot, Rails).
+- Environment variable discovery uses regular expressions across source code to find `process.env.*`, `os.environ[*]`, `os.getenv(*)`, and `System.getenv(*)`.
+- System and runtime default variables (`PATH`, `NODE_ENV`, `HOME`) are filtered out.
+- Infrastructure detection flags the presence of Docker, GitHub Actions, and test configurations.
+
+### 5. README Health Scoring Engine
+
+The scoring system calculates an objective score between 0 and 100 based on standard documentation components:
+
+| Criterion | Weight | Evaluation Method |
+|---|---|---|
+| Project Title and Overview | 20 points | Verifies top-level header and summary paragraph |
+| Installation Instructions | 15 points | Checks for setup code blocks and dependency install commands |
+| Quick Start and Usage | 15 points | Verifies execution commands, code examples, or run scripts |
+| Configuration and Environment | 15 points | Scans for environment variable tables or configuration sections |
+| Architecture and Structure | 10 points | Looks for architecture overviews, directory maps, or diagrams |
+| Contributing and Testing | 10 points | Checks for test execution instructions and contribution guidelines |
+| License and Badges | 15 points | Detects license declaration, shields.io badges, or status indicators |
+
+The engine returns both the numerical score and a checklist of missing elements. Scoring is executed on the existing repository README (before) and on the newly generated README (after).
+
+### 6. LLM Generation Pipeline
+
+Documentation writing interfaces directly with Google Gemini REST API:
+- System Prompt: Enforces strict documentation standards, technical tone, markdown formatting rules, and prompt-injection defense mechanisms.
+- Context Assembly: Combines repository metadata, detected tech stack, ASCII file tree summary, extracted source files, and commit logs.
+- Concurrency Control: Document types (`readme`, `architecture`, `api`, `contributing`, `changelog`) are generated in parallel with a concurrency limit of 3 to stay within rate bounds.
+- Authentication: The Gemini API key is transmitted via the `x-goog-api-key` header rather than URL query parameters to avoid server logging exposure.
+- Failure Handling:
+  - Automatic fallback: If the primary model returns 404, the client queries fallback models and records the active model.
+  - Exponential backoff: Retries on 429, 500, 502, 503, and 504 errors while respecting upstream `Retry-After` headers.
+  - Execution deadline: Terminates ongoing LLM calls before hitting serverless platform execution timeouts (54-second budget).
+
+### 7. Post-Processing and Mermaid Rendering
+
+Post-processing normalizes generated output before delivery:
+- Enclosing markdown code blocks are unescaped if wrapped by model output.
+- Shields.io badge lines are constructed using repository metadata (license, stars, top language, commit timestamp) and prepended to README files if enabled.
+- For ARCHITECTURE documents containing Mermaid diagrams (`flowchart` or `graph`), the browser renderer initializes Mermaid with `securityLevel: 'strict'`.
+- If the model emits invalid Mermaid syntax, the UI catches the parse error and displays the raw diagram code with an inline syntax notice rather than breaking the page view.
+
+### 8. Document Refinement
+
+Users can modify generated documents using conversational instructions:
+- The client sends `POST /api/v1/docs/{id}/refine` with the document type and a natural-language prompt (such as "Add Docker deployment instructions" or "Simplify the getting started guide").
+- Gemini receives the original document, the refinement instruction, and technical context.
+- The revised document replaces the previous version, its revision counter increments, and changes are committed to storage.
+
+### 9. Incoming GitHub Auto-Sync Webhook
+
+Automated continuous documentation synchronization is supported for GitHub repositories:
+- A user creates a sync subscription via `POST /api/v1/sync`, receiving a webhook payload URL (`/api/v1/hooks/github/{token}`) and a secret.
+- The webhook is registered in GitHub repository settings under Webhooks with push events.
+- On code push:
+  1. GitHub sends a POST request containing `X-Hub-Signature-256`.
+  2. The endpoint computes the HMAC-SHA256 signature using the stored secret and validates payload authenticity.
+  3. The request checks that the push corresponds to the subscribed branch.
+  4. An asynchronous documentation generation job is queued and executed.
+  5. Subscribed outbound webhooks receive `sync.triggered` and `doc.completed` notifications.
+
+### 10. Outbound Event Webhook Delivery
+
+Subscribers can receive real-time webhook notifications for project events:
+- Supported events: `doc.completed`, `doc.failed`, `sync.triggered`, `ping`.
+- SSRF Security: Destination URLs are validated against private IP ranges, loopback addresses, link-local addresses, and cloud provider metadata endpoints (169.254.169.254).
+- Payloads are signed with HMAC-SHA256:
+  - Header `X-RepoScribe-Timestamp`: Unix epoch timestamp in seconds.
+  - Header `X-RepoScribe-Signature`: `v1=<hex_hmac_sha256>`.
+  - Signature message: `${timestamp}.${rawJsonBody}`.
+- Delivery attempts retry on 5xx errors and network timeouts up to 3 times with exponential backoff (0s, 1s, 4s).
+- Webhooks with 10 consecutive delivery failures are automatically disabled.
+
+---
+
+## API Reference
+
+All API responses use JSON envelopes. Errors return structured objects containing `error.code`, `error.message`, and `requestId`.
+
+| Method | Endpoint | Required Scope | Description |
+|---|---|---|---|
+| POST | `/api/v1/keys` | Public | Create a new scoped API key |
+| GET | `/api/v1/keys/me` | Any | Inspect metadata and usage of active key |
+| DELETE | `/api/v1/keys/me` | Any | Revoke active API key |
+| POST | `/api/v1/keys/me/rotate` | Any | Rotate key secret while preserving ID and settings |
+| POST | `/api/v1/analyze` | `generate` | Deterministic static codebase analysis without LLM cost |
+| POST | `/api/v1/generate` | `generate` | Generate documentation set (sync 201 or async 202) |
+| GET | `/api/v1/docs` | `read` or `generate` | List generated documentation sets for authenticated key |
+| GET | `/api/v1/docs/{id}` | `read` or `generate` | Fetch documentation set as JSON or raw Markdown |
+| DELETE | `/api/v1/docs/{id}` | `generate` | Delete documentation set |
+| POST | `/api/v1/docs/{id}/refine` | `generate` | Refine specific document via natural-language prompt |
+| GET | `/api/v1/sync` | `webhooks` | List auto-sync subscriptions |
+| POST | `/api/v1/sync` | `webhooks` | Create new auto-sync subscription for GitHub push events |
+| GET | `/api/v1/sync/{id}` | `webhooks` | Get sync subscription details |
+| DELETE | `/api/v1/sync/{id}` | `webhooks` | Delete sync subscription |
+| POST | `/api/v1/hooks/github/{token}` | Signature | Incoming GitHub push webhook receiver |
+| GET | `/api/v1/webhooks` | `webhooks` | List outbound webhook registrations |
+| POST | `/api/v1/webhooks` | `webhooks` | Register new outbound webhook |
+| GET | `/api/v1/webhooks/{id}` | `webhooks` | Get outbound webhook details |
+| DELETE | `/api/v1/webhooks/{id}` | `webhooks` | Delete outbound webhook |
+| POST | `/api/v1/webhooks/{id}/test` | `webhooks` | Send test ping delivery |
+| GET | `/api/v1/webhooks/{id}/deliveries` | `webhooks` | View recent delivery log history |
+| GET | `/api/v1/health` | Public | Service health check |
+| GET | `/api/v1/openapi.json` | Public | OpenAPI 3.1 specification |
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `GEMINI_API_KEY` | Yes | None | Google Gemini API key |
+| `GEMINI_MODEL` | No | `gemini-flash-latest` | Primary Gemini model identifier |
+| `GEMINI_BASE_URL` | No | `https://generativelanguage.googleapis.com` | Base URL for Gemini REST API calls |
+| `UPSTASH_REDIS_REST_URL` | No | None | Upstash Redis URL for production persistence |
+| `UPSTASH_REDIS_REST_TOKEN` | No | None | Upstash Redis authentication token |
+| `KV_REST_API_URL` | No | None | Vercel KV URL alias |
+| `KV_REST_API_TOKEN` | No | None | Vercel KV token alias |
+| `GITHUB_TOKEN` | Recommended | None | GitHub personal access token for higher rate limits |
+| `RATE_LIMIT_PER_MINUTE` | No | `30` | Allowed requests per minute per key |
+| `GENERATIONS_PER_DAY` | No | `20` | Allowed generation runs per day per key |
+| `KEY_ISSUE_PER_HOUR` | No | `10` | Allowed key registrations per IP per hour |
+| `ALLOW_PRIVATE_WEBHOOK_TARGETS`| No | `false` | Set to true only in local development to test loopback webhooks |
+| `PUBLIC_BASE_URL` | No | None | Host URL override for generated webhook links |
+
+---
+
+## Local Setup and Installation
+
+### Prerequisites
+
+- Node.js 20 or higher
+- npm package manager
+- Gemini API key from Google AI Studio
+
+### Setup Steps
+
+1. Clone the repository:
+```bash
+git clone https://github.com/your-username/reposcribe.git
+cd reposcribe
+```
+
+2. Install dependencies:
 ```bash
 npm install
-cp .env.example .env.local        # Windows PowerShell: copy .env.example .env.local
-# edit .env.local and set GEMINI_API_KEY (and optionally GITHUB_TOKEN)
-npm run dev                        # http://localhost:3000
 ```
 
-Without Redis credentials the app stores data in `.data/store.json` (git-ignored), so no database is needed locally.
-
-### Environment variables
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `GEMINI_API_KEY` | yes | Gemini API key |
-| `GEMINI_MODEL` | no | Default `gemini-flash-latest`. If a model id is unknown the app falls back to `GEMINI_FALLBACK_MODELS` |
-| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | on Vercel | Persistent store. `KV_REST_API_URL` / `KV_REST_API_TOKEN` (Vercel integration names) also work |
-| `GITHUB_TOKEN` | **strongly recommended in production** | Anonymous GitHub API access is 60 requests/hour *per IP* and Vercel IPs are shared, so deployed apps hit the limit fast. Use a token that can only read public data |
-| `RATE_LIMIT_PER_MINUTE`, `GENERATIONS_PER_DAY`, `KEY_ISSUE_PER_HOUR` | no | Defaults 30 / 20 / 10 |
-| `ALLOW_PRIVATE_WEBHOOK_TARGETS` | no | `true` only for local webhook testing; keep `false` in production |
-| `PUBLIC_BASE_URL` | no | Override the origin used in links |
-
-## Deploy to Vercel
-
-1. Push this project to a GitHub repository and **Import** it in Vercel (framework preset: Next.js, no settings to change).
-2. **Storage**: Project -> Storage -> Marketplace -> **Upstash Redis** -> Connect (free tier). This injects the `KV_REST_API_*` variables automatically.
-3. **Settings -> Environment Variables**: add `GEMINI_API_KEY` and `GITHUB_TOKEN` (and optionally `GEMINI_MODEL`).
-4. Deploy. Open `/api/v1/health` - it should report `{"status":"ok"}` with `store: "upstash"`, `llm: "configured"`.
-5. Smoke test the live deployment: `BASE=https://<your-app>.vercel.app node scripts/e2e.mjs` (webhook checks run only locally).
-
-Notes: generation routes declare `maxDuration = 60`, the maximum on the Hobby plan. Jobs that are cut off anyway are marked failed on the next read instead of hanging forever.
-
-## Using the API
-
-Create a key (public, rate limited per IP) and call the API:
-
+3. Configure environment settings:
 ```bash
-curl -X POST https://<host>/api/v1/keys -H "Content-Type: application/json" -d '{"name":"my script"}'
-# -> { "apiKey": "rsk_a1b2c3d4e5f6_...", ... }   (shown once)
-
-export KEY=rsk_a1b2c3d4e5f6_...
-
-# generate (sync). Add "async": true to get 202 + Location and poll /docs/{id}
-curl -X POST https://<host>/api/v1/generate \
-  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"repoUrl":"https://github.com/octocat/Hello-World","types":["readme","architecture"],"style":"standard"}'
-
-# export Markdown
-curl -H "Authorization: Bearer $KEY" "https://<host>/api/v1/docs/<id>?format=markdown&type=readme&download=1" -o README.md
+cp .env.example .env.local
 ```
 
-| Method & path | Scope | Purpose |
-|---------------|-------|---------|
-| `POST /api/v1/keys` | public | Create an API key |
-| `GET / DELETE /api/v1/keys/me`, `POST /api/v1/keys/me/rotate` | any | Inspect, revoke, rotate |
-| `POST /api/v1/analyze` | generate | Deterministic repo analysis + README score (no LLM) |
-| `POST /api/v1/generate` | generate | Generate docs (sync `201` / async `202`) |
-| `GET /api/v1/docs`, `GET / DELETE /api/v1/docs/{id}` | read / generate | List, fetch or export (`format=json\|markdown`), delete |
-| `POST /api/v1/docs/{id}/refine` | generate | Edit a document with an instruction |
-| `GET / POST /api/v1/webhooks`, `GET / DELETE .../{id}`, `POST .../{id}/test`, `GET .../{id}/deliveries` | webhooks | Manage outbound webhooks |
-| `GET / POST /api/v1/sync`, `GET / DELETE /api/v1/sync/{id}` | webhooks | Auto-regenerate on GitHub push |
-| `POST /api/v1/hooks/github/{token}` | signature | Incoming GitHub webhook receiver |
-| `GET /api/v1/health`, `GET /api/v1/openapi.json` | public | Health and OpenAPI spec |
-
-Errors always look like `{ "error": { "code": "...", "message": "...", "details": ... }, "requestId": "req_..." }`
-with accurate statuses: 400 malformed, 401 auth, 403 scope / private repo, 404, 409, 413, 422 validation, 429 limits, 502 upstream, 503 not configured.
-
-### Webhook payloads and verification
-
-```json
-{ "id": "evt_...", "type": "doc.completed", "apiVersion": "v1", "createdAt": "...",
-  "data": { "id": "doc_...", "status": "completed", "repo": { "fullName": "octocat/Hello-World" },
-            "types": ["readme"], "health": { "before": 8, "after": 78 }, "links": { "self": "https://<host>/api/v1/docs/doc_..." } } }
+4. Populate environment variables in `.env.local`:
+```env
+GEMINI_API_KEY=your_actual_gemini_api_key
+GITHUB_TOKEN=your_optional_github_token
 ```
 
-Headers: `X-RepoScribe-Event`, `X-RepoScribe-Delivery`, `X-RepoScribe-Timestamp`, `X-RepoScribe-Signature: v1=<hex>` where
-`hex = HMAC_SHA256(secret, timestamp + "." + rawBody)`. Reject timestamps older than 5 minutes. A ready-to-copy Node verifier is on the Developers page.
-Events: `doc.completed`, `doc.failed`, `sync.triggered`, `ping`.
-
-## Security design
-
-- API keys are stored only as SHA-256 hashes; unknown ids and wrong secrets return the same error (no key enumeration); secrets are shown once.
-- **Prompt-injection hygiene**: repository text is untrusted. It is fenced in tags, tag look-alikes inside files are neutralised, the system prompt forbids following instructions found in it, and `language`/`style` are strictly validated.
-- **SSRF guard** for webhook URLs (https only, no credentials, no loopback / private / link-local / cloud-metadata addresses, DNS re-checked on every attempt, redirects never followed).
-- GitHub only ever contacted at `api.github.com` and `raw.githubusercontent.com`. A caller's GitHub token is used for that request only (never stored or logged), and the shared server token can **never** read a private repo.
-- Markdown is rendered without raw HTML; Mermaid runs with `securityLevel: "strict"`.
-- Gemini key travels in a header (not the URL); upstream error bodies are never echoed to clients.
-- Tenant isolation: documents, webhooks and syncs belong to the key that created them (other keys get 404).
-
-## Testing
-
+5. Run development server:
 ```bash
-npm test                 # 100+ unit/integration tests (auth, SSRF, webhooks, Gemini client, pipeline, sync, GitHub errors)
+npm run dev
+```
+
+6. Access the application:
+- Web Application: http://localhost:3000
+- Developer Portal: http://localhost:3000/developers
+- Swagger Documentation: http://localhost:3000/docs
+- OpenAPI Specification: http://localhost:3000/api/v1/openapi.json
+
+---
+
+## Testing and Quality Assurance
+
+The test suite covers unit logic, security barriers, rate limiters, Gemini client retries, webhook signatures, and data pipelines.
+
+Execute the test suite:
+```bash
+npm test
+```
+
+Perform type checking:
+```bash
 npm run typecheck
-npm run build
-
-# end-to-end against a running server (uses real GitHub; fake Gemini for zero quota):
-npm run mock:gemini                                   # terminal 1  (port 8787)
-GEMINI_API_KEY=fake GEMINI_BASE_URL=http://127.0.0.1:8787 ALLOW_PRIVATE_WEBHOOK_TARGETS=true KEY_ISSUE_PER_HOUR=1000 npm run dev   # terminal 2  (serves http://localhost:3000)
-BASE=http://localhost:3000 npm run e2e                # terminal 3  (BASE defaults to http://127.0.0.1:3100)
 ```
 
-The e2e script performs ~60 checks and stops with a clear message if GitHub's anonymous rate limit is exhausted.
+Build production bundle:
+```bash
+npm run build
+```
 
-## Add-ons
+---
 
-**Already built in**
-1. Multi-document generation (README, architecture, API, contributing, changelog)
-2. README health score with before/after and fix suggestions
-3. Mermaid architecture diagrams
-4. Content-addressed cache (zero quota for unchanged repos)
-5. Refine-with-instruction editing
-6. Style presets and any output language (incl. Hindi, Kannada)
-7. Auto-sync on GitHub push (incoming webhook)
-8. Signed outbound webhooks with delivery logs and retries
-9. Auto-inserted shields.io badges (deterministic, never hallucinated)
-10. Private-repo support via a per-request token
-11. Markdown export (single file or combined) over the API
+## Security Architecture
 
-**Good next steps**
-- Open a Pull Request with the generated README (GitHub App / fine-grained token with write access)
-- A GitHub Action / CLI (`npx reposcribe owner/repo`) that calls the API in CI
-- Streaming output (SSE) so text appears as it is generated
-- ZIP / PDF / HTML export and a public shareable page per document
-- Docstring / JSDoc generation for individual files; monorepo (per-package) docs
-- Docs-drift detection: re-score on every push and comment on PRs when docs go stale
-- Conditional requests (ETag) to GitHub so repeat analyses cost no rate limit
-- Usage analytics dashboard per API key; team workspaces instead of single-key tenants
-
-## Known limitations
-
-- Gemini free-tier limits apply and change over time; the app surfaces them as `llm_rate_limited` (429) and enforces its own daily quota per key.
-- Very large repositories are summarised from a ranked subset of files (about 80k characters of context), so details deep in the tree may be missing - always review generated docs.
-- Keys are independent tenants (no user accounts); losing a key means losing access to that key's history.
+- Credential Protection: API keys are stored solely as SHA-256 hashes. Plaintext keys are shown once during creation and cannot be retrieved from storage.
+- Prompt-Injection Hygiene: Untrusted repository content is fenced inside structural delimiters. System prompts strictly forbid models from executing instructions discovered within source repositories.
+- Server-Side Request Forgery Prevention: Outbound webhook endpoints resolve domain names and reject loopback, private RFC-1918, link-local, and cloud metadata IP addresses. Webhook requests never follow HTTP redirects.
+- In-Memory Token Handling: Private repository tokens provided by callers are used exclusively for on-the-fly GitHub requests and are never written to disk or logged.
+- HTML Sanitization: Markdown rendering strips raw HTML tags. Mermaid diagrams execute under strict security isolation mode to prevent script injection.
+- Secret Exposure Safeguards: The Gemini API key is provided strictly in HTTP request headers, never exposed in URLs or echoed in client-facing error payloads.
+- Multi-Tenant Isolation: Documentation jobs, webhooks, and sync subscriptions are isolated by API key ID. Requests referencing resources owned by another key return HTTP 404 to prevent resource enumeration.
