@@ -14,6 +14,27 @@ const bool = (name: string, fallback: boolean) => {
   return ["1", "true", "yes", "on"].includes(v);
 };
 
+const clean = (url: string, token: string) => ({ url: url.trim().replace(/\/+$/, ""), token: token.trim() });
+
+/**
+ * Upstash REST credentials. Known names first; then any `<PREFIX>_REST_API_URL` +
+ * `<PREFIX>_REST_API_TOKEN` pair, because Vercel's storage "Connect" dialog lets users pick a custom
+ * prefix. Never picks the read-only token.
+ */
+function redisCredentials(): { url: string; token: string } {
+  const known: [string | undefined, string | undefined][] = [
+    [process.env.UPSTASH_REDIS_REST_URL, process.env.UPSTASH_REDIS_REST_TOKEN],
+    [process.env.KV_REST_API_URL, process.env.KV_REST_API_TOKEN],
+  ];
+  for (const [url, token] of known) if (url?.trim() && token?.trim()) return clean(url, token);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!value || !key.endsWith("_REST_API_URL")) continue;
+    const token = process.env[`${key.slice(0, -"_REST_API_URL".length)}_REST_API_TOKEN`];
+    if (token?.trim() && /^https:\/\//i.test(value.trim())) return clean(value, token);
+  }
+  return { url: "", token: "" };
+}
+
 export const env = {
   get geminiKey() {
     return process.env.GEMINI_API_KEY?.trim() ?? "";
@@ -31,16 +52,17 @@ export const env = {
       .filter(Boolean);
   },
   get redisUrl() {
-    return (process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || "").trim().replace(/\/+$/, "");
+    return redisCredentials().url;
   },
   get redisToken() {
-    return (process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || "").trim();
+    return redisCredentials().token;
   },
   get githubToken() {
     return process.env.GITHUB_TOKEN?.trim() ?? "";
   },
   get ratePerMinute() {
-    return num("RATE_LIMIT_PER_MINUTE", 30);
+    // 60/min leaves room for the web UI polling a running job (~24 req/min) plus normal use.
+    return num("RATE_LIMIT_PER_MINUTE", 60);
   },
   get generationsPerDay() {
     return num("GENERATIONS_PER_DAY", 20);

@@ -14,15 +14,23 @@ export const OPTIONS = preflight;
  * (X-Hub-Signature-256) proves the request really came from GitHub with our shared secret.
  */
 export const POST = route<{ token: string }>(async (c) => {
+  const deadline = Date.now() + 57_000; // finish background work before maxDuration
   const raw = await c.req.text();
   const result = await processGithubDelivery(c.params.token, raw, c.req.headers, c.origin);
 
   if (result.job && result.sync) {
     const { job, sync } = result;
     after(async () => {
-      await dispatch(sync.keyId, "sync.triggered", { syncId: sync.id, repo: sync.fullName, docId: job.id, triggerCount: sync.triggerCount });
+      // Notify and generate concurrently, so a slow receiver cannot eat into the generation budget.
+      const notified = dispatch(
+        sync.keyId,
+        "sync.triggered",
+        { syncId: sync.id, repo: sync.fullName, docId: job.id, triggerCount: sync.triggerCount },
+        deadline,
+      );
       const done = await runJob(job);
-      await dispatchJobEvent(done);
+      await notified;
+      await dispatchJobEvent(done, deadline);
     });
   }
   return json(result.body, result.status);

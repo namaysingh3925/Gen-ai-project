@@ -90,6 +90,15 @@ export function buildOpenApi(origin: string): Json {
           tags: ["System"],
           summary: "Health check",
           security: [],
+          parameters: [
+            {
+              name: "deep",
+              in: "query",
+              required: false,
+              description: "`1` also verifies the Gemini key and model with a free metadata call (cached 60 s); `checks.llm` becomes ok / invalid_key / model_not_found / unreachable.",
+              schema: { enum: ["0", "1"] },
+            },
+          ],
           responses: {
             "200": ok("Service is healthy", ref("Health")),
             "503": ok("Degraded (store or Gemini key not configured)", ref("Health")),

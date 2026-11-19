@@ -20,8 +20,11 @@ import { DOC_TYPES, STYLES, type DocJob, type DocType, type GenerateOptions } fr
 const JOB_TTL = 30 * 86400;
 const CACHE_TTL = 7 * 86400;
 const STALE_AFTER_MS = 150_000;
-/** Vercel Hobby functions may run up to 60 s; stop LLM work a little before that. */
-const TIME_BUDGET_MS = 54_000;
+/**
+ * Routes run with maxDuration = 60 s. Generation gets 45 s so the remaining time can carry the
+ * doc.completed / doc.failed webhook deliveries before the function is stopped.
+ */
+const TIME_BUDGET_MS = 45_000;
 const LLM_CONCURRENCY = 3;
 
 const jobKey = (id: string) => `job:${id}`;

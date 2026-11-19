@@ -76,8 +76,16 @@ export async function issueKey(name = "Browser (web app)"): Promise<string> {
   return data.apiKey as string;
 }
 
+/** One key-issuing request at a time: pages fire several API calls on mount, and each would otherwise mint its own key. */
+let issuing: Promise<string> | null = null;
+
 export async function ensureKey(): Promise<string> {
-  return getStoredKey() ?? memoryKey ?? issueKey();
+  const existing = getStoredKey() ?? memoryKey;
+  if (existing) return existing;
+  issuing ??= issueKey().finally(() => {
+    issuing = null;
+  });
+  return issuing;
 }
 
 interface Options extends Omit<RequestInit, "body"> {

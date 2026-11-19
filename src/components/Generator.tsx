@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { api, describeError, downloadText, type JobSummary, type JobView } from "@/lib/client";
+import { api, ApiClientError, describeError, downloadText, type JobSummary, type JobView } from "@/lib/client";
 import { DOC_TYPES, STYLES, type DocType, type Style } from "@/lib/types";
 import { Markdown } from "./Markdown";
 
@@ -105,10 +105,13 @@ export function Generator() {
   }, [loadHistory]);
 
   const poll = useCallback(async (id: string): Promise<JobView> => {
+    const POLL_MS = 2500; // ~24 requests/minute: well inside the per-key rate limit
     let failures = 0;
+    let wait = POLL_MS;
     const deadline = Date.now() + 5 * 60_000;
     while (alive.current && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, wait));
+      wait = POLL_MS;
       try {
         const j = await api<JobView>(`/api/v1/docs/${id}`);
         if (!alive.current) break;
@@ -116,6 +119,11 @@ export function Generator() {
         failures = 0;
         if (j.status === "completed" || j.status === "failed") return j;
       } catch (e) {
+        // Rate limited: back off as the server asks and keep waiting - the job itself is still running.
+        if (e instanceof ApiClientError && e.status === 429) {
+          wait = Math.min(30, e.retryAfter ?? 5) * 1000;
+          continue;
+        }
         if (++failures >= 4) throw e;
       }
     }

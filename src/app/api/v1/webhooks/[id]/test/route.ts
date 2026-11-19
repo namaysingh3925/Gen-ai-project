@@ -10,6 +10,6 @@ export const OPTIONS = preflight;
 export const POST = route<{ id: string }>(async (c) => {
   const key = await authenticate(c, "webhooks");
   const hook = await getWebhook(c.params.id, key.id);
-  const delivery = await deliver(hook, "ping", { message: "Hello from RepoScribe", webhookId: hook.id });
+  const delivery = await deliver(hook, "ping", { message: "Hello from RepoScribe", webhookId: hook.id }, Date.now() + 27_000);
   return json({ object: "delivery", ...delivery });
 });

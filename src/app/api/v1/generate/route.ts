@@ -9,12 +9,16 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 export const OPTIONS = preflight;
 
+/** Background work (generation + webhook delivery) must finish before maxDuration; keep a margin. */
+const FUNCTION_BUDGET_MS = 57_000;
+
 /**
  * Generate documentation for a GitHub repository.
  *  - default (sync): waits for Gemini and returns 201 with the finished document set.
  *  - `"async": true`: returns 202 immediately; poll `GET /api/v1/docs/{id}` or subscribe to webhooks.
  */
 export const POST = route(async (c) => {
+  const deadline = Date.now() + FUNCTION_BUDGET_MS;
   const key = await authenticate(c, "generate");
   const input = await readJson(c.req, generateInputSchema);
   await assertQuotaAvailable(key.id);
@@ -26,13 +30,13 @@ export const POST = route(async (c) => {
   if (input.async) {
     after(async () => {
       const done = await runJob(job, userToken);
-      await dispatchJobEvent(done);
+      await dispatchJobEvent(done, deadline);
     });
     return json(serializeJob(job), 202, { Location: location });
   }
 
   const done = await runJob(job, userToken);
-  after(() => dispatchJobEvent(done));
+  after(() => dispatchJobEvent(done, deadline));
   if (done.status === "failed" && done.error) {
     throw new ApiError(
       done.error.status ?? 500,

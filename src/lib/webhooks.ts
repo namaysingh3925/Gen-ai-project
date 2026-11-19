@@ -116,7 +116,11 @@ export async function listDeliveries(id: string, limit = 25): Promise<Delivery[]
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function deliver(rec: WebhookRecord, type: WebhookEvent, data: unknown): Promise<Delivery> {
+/**
+ * Deliver one event with retries. `deadline` (epoch ms) keeps delivery inside the serverless function's
+ * time limit: attempts shrink their timeout to fit and retries are skipped when there is no time left.
+ */
+export async function deliver(rec: WebhookRecord, type: WebhookEvent, data: unknown, deadline?: number): Promise<Delivery> {
   const started = Date.now();
   const eventId = newId("evt");
   const body = JSON.stringify({ id: eventId, type, apiVersion: "v1", createdAt: new Date().toISOString(), data });
@@ -126,9 +130,12 @@ export async function deliver(rec: WebhookRecord, type: WebhookEvent, data: unkn
   let error: string | null = null;
   let success = false;
 
+  const left = () => (deadline ?? Infinity) - Date.now();
   for (const delay of RETRY_DELAYS_MS) {
+    if (attempts > 0 && left() < delay + 2500) break; // no time for a meaningful retry
     if (delay) await sleep(delay);
     attempts++;
+    const timeoutMs = Math.max(1000, Math.min(8000, left() - 500));
     try {
       await assertSafeWebhookUrl(rec.url); // re-validated on every attempt (DNS may have changed)
       const timestamp = Math.floor(Date.now() / 1000);
@@ -144,7 +151,7 @@ export async function deliver(rec: WebhookRecord, type: WebhookEvent, data: unkn
           "X-RepoScribe-Signature": signPayload(rec.secret, timestamp, body),
         },
         body,
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       responseStatus = res.status;
       await res.body?.cancel().catch(() => {});
@@ -189,10 +196,10 @@ export async function deliver(rec: WebhookRecord, type: WebhookEvent, data: unkn
 }
 
 /** Fan an event out to every active subscriber of `keyId`. Never throws. */
-export async function dispatch(keyId: string, type: WebhookEvent, data: unknown): Promise<void> {
+export async function dispatch(keyId: string, type: WebhookEvent, data: unknown, deadline?: number): Promise<void> {
   try {
     const hooks = (await listWebhooks(keyId)).filter((w) => w.active && w.events.includes(type));
-    await Promise.allSettled(hooks.map((w) => deliver(w, type, data)));
+    await Promise.allSettled(hooks.map((w) => deliver(w, type, data, deadline)));
   } catch (e) {
     console.error("[webhooks] dispatch failed", e instanceof Error ? e.message : e);
   }
@@ -214,8 +221,8 @@ export function jobEventData(job: DocJob) {
   };
 }
 
-export async function dispatchJobEvent(job: DocJob) {
-  await dispatch(job.keyId, job.status === "completed" ? "doc.completed" : "doc.failed", jobEventData(job));
+export async function dispatchJobEvent(job: DocJob, deadline?: number) {
+  await dispatch(job.keyId, job.status === "completed" ? "doc.completed" : "doc.failed", jobEventData(job), deadline);
 }
 
 export { WEBHOOK_EVENTS };

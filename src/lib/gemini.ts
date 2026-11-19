@@ -32,6 +32,48 @@ const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 
 export function resetGeminiForTests() {
   workingModel = null;
+  checkCache = null;
+}
+
+export interface GeminiCheck {
+  status: "ok" | "missing_key" | "invalid_key" | "model_not_found" | "unreachable";
+  model?: string;
+}
+
+let checkCache: { at: number; value: GeminiCheck } | null = null;
+
+/**
+ * Verify the configured key + model WITHOUT spending generation quota: `models.get` is a metadata
+ * call. Walks the same fallback list as generateText(). Cached for 60 s so a public health endpoint
+ * cannot be used to hammer Google with the owner's key.
+ */
+export async function checkGemini(): Promise<GeminiCheck> {
+  if (!env.geminiKey) return { status: "missing_key" };
+  if (checkCache && Date.now() - checkCache.at < 60_000) return checkCache.value;
+  let value: GeminiCheck = { status: "model_not_found" };
+  for (const model of modelCandidates()) {
+    const id = model.replace(/^models\//, "");
+    try {
+      const res = await fetch(`${env.geminiBaseUrl}/v1beta/models/${encodeURIComponent(id)}`, {
+        headers: { "x-goog-api-key": env.geminiKey },
+        cache: "no-store",
+        signal: AbortSignal.timeout(8000),
+      });
+      await res.body?.cancel().catch(() => {});
+      if (res.ok) {
+        value = { status: "ok", model: id };
+        break;
+      }
+      if (res.status === 404) continue;
+      value = { status: res.status === 400 || res.status === 401 || res.status === 403 ? "invalid_key" : "unreachable" };
+      break;
+    } catch {
+      value = { status: "unreachable" };
+      break;
+    }
+  }
+  checkCache = { at: Date.now(), value };
+  return value;
 }
 
 function modelCandidates(): string[] {
