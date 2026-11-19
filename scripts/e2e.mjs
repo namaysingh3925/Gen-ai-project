@@ -31,7 +31,7 @@ const ok =(cond, name, extra = "") => {
   return cond;
 };
 
-async function call(method, path, { key, body, headers = {}, rawBody } = {}) {
+async function call(method, path, { key, body, headers = {}, rawBody } = {}, attempt = 0) {
   const h = { ...headers };
   if (key) h.Authorization = `Bearer ${key}`;
   if (body !== undefined) h["Content-Type"] = "application/json";
@@ -41,10 +41,17 @@ async function call(method, path, { key, body, headers = {}, rawBody } = {}) {
   try {
     json = JSON.parse(text);
   } catch {}
+  // Real deployments enforce the per-minute key limit: wait as instructed and retry instead of failing.
+  if (res.status === 429 && json?.error?.code === "rate_limited" && attempt < 2) {
+    const wait = Math.min(60, Number(res.headers.get("retry-after")) || 5);
+    console.log(`      (rate limited, waiting ${wait}s)`);
+    await new Promise((r) => setTimeout(r, wait * 1000));
+    return call(method, path, { key, body, headers, rawBody }, attempt + 1);
+  }
   return { status: res.status, headers: res.headers, json, text };
 }
 
-async function waitFor(fn, ms = 90_000, every = 1000) {
+async function waitFor(fn, ms = 90_000, every = 2500) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     const v = await fn();
