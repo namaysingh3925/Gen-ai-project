@@ -16,7 +16,8 @@ describe("API keys", () => {
     const { record, apiKey } = await createKey("test", ["generate", "read"]);
     expect(apiKey).toMatch(/^rsk_[a-f0-9]{12}_[A-Za-z0-9_-]{32}$/);
     expect(record.secretHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(JSON.stringify(record)).not.toContain(apiKey.split("_")[2]);
+    const secret = apiKey.split("_").slice(2).join("_");
+    expect(JSON.stringify(record)).not.toContain(secret);
   });
 
   it("authenticates a valid key and exposes rate-limit headers", async () => {

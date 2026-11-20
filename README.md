@@ -9,6 +9,7 @@ RepoScribe analyzes GitHub repositories and automatically generates comprehensiv
 ## Table of Contents
 
 - Overview
+- Assignment Requirements and Where They Are Met
 - Architecture and Technologies
 - Exact End-to-End Workflow
 - Detailed Component Workflows
@@ -25,6 +26,7 @@ RepoScribe analyzes GitHub repositories and automatically generates comprehensiv
 - API Reference
 - Environment Variables
 - Local Setup and Installation
+- Deploy to Vercel
 - Testing and Quality Assurance
 - Security Architecture
 
@@ -45,6 +47,23 @@ Key capabilities:
 - Incremental document refinement using natural-language instructions.
 - Bi-directional webhook system: incoming GitHub push receivers and HMAC-signed outbound notification webhooks.
 - Scoped API key authentication with per-minute rate limiting and daily usage quotas.
+
+---
+
+## Assignment Requirements and Where They Are Met
+
+GenAI Applications (BTIN337) CIA-P individual project.
+
+| # | Requirement | Implementation |
+|---|---|---|
+| 1 | Functional application | Web UI at `/` (generate, preview, refine by instruction, export) and developer portal at `/developers` |
+| 2 | Deployment on Vercel | Standard Next.js project with no custom server; see Deploy to Vercel below |
+| 3 | Direct Gemini integration | `src/lib/gemini.ts` calls `generateContent` over REST with `fetch`, no wrapper libraries |
+| 4 | API export methods | `POST /api/v1/generate`, `POST /api/v1/analyze`, `GET /api/v1/docs`, `GET /api/v1/docs/{id}?format=json\|markdown` |
+| 5 | Webhooks | Outbound signed webhooks (`/api/v1/webhooks`) and an incoming GitHub push receiver (`/api/v1/hooks/github/{token}`); JSON in and out with proper status codes |
+| 6 | API key authentication | `src/lib/auth.ts`: structured `rsk_<id>_<secret>` keys, hashed at rest, scopes, per-key rate limits, rotate and revoke |
+| 7 | API documentation | OpenAPI 3.1 spec at `/api/v1/openapi.json`, interactive Swagger UI at `/docs` |
+| 8 | Secrets in `.env`, not in code | `.env.example` committed, `.env*` git-ignored, nothing hard-coded |
 
 ---
 
@@ -334,6 +353,22 @@ npm run dev
 - Developer Portal: http://localhost:3000/developers
 - Swagger Documentation: http://localhost:3000/docs
 - OpenAPI Specification: http://localhost:3000/api/v1/openapi.json
+
+---
+
+## Deploy to Vercel
+
+1. Import the GitHub repository in Vercel (framework preset: Next.js, no build settings to change).
+2. Storage: Project, then Storage, then Marketplace, then Upstash Redis, then Connect (free tier). This injects the `KV_REST_API_*` variables automatically.
+3. Settings, then Environment Variables: add `GEMINI_API_KEY` and `GITHUB_TOKEN` (optionally `GEMINI_MODEL`).
+4. Deploy, then open `/api/v1/health`. It should return HTTP 200 with `"status": "ok"` and `checks.store: "upstash"`, `checks.llm: "configured"`. Add `?deep=1` to also verify the Gemini key and model.
+5. Smoke test the live deployment:
+```bash
+BASE=https://<your-app>.vercel.app node scripts/e2e.mjs
+```
+Webhook delivery checks run only locally.
+
+Generation routes declare `maxDuration = 60`, the maximum on the Vercel Hobby plan. Jobs cut off by the platform are marked failed on the next read instead of hanging.
 
 ---
 
